@@ -1,0 +1,354 @@
+diff -r -u -N java_cup_orig/AntTask.java java_cup/AntTask.java
+--- java_cup_orig/AntTask.java	1970-01-01 10:00:00.000000000 +1000
++++ java_cup/AntTask.java	2003-06-04 03:11:53.000000000 +1000
+@@ -0,0 +1,261 @@
++/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
++ * Ant task for CUP                                                        * 
++ * Copyright (C) 2003       Gerwin Klein <lsf@jflex.de>                    *
++ * All rights reserved.                                                    *
++ *                                                                         * 
++ * License: LGPL 2, http://www.gnu.org/copyleft/lesser.html                *
++ *                                                                         *
++ * This library is free software; you can redistribute it and/or           *
++ * modify it under the terms of the GNU Lesser General Public              *
++ * License as published by the Free Software Foundation; either            *
++ * version 2 of the License, or (at your option) any later version.        *
++ *                                                                         *
++ * This library is distributed in the hope that it will be useful,         *
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of          *
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU       *
++ * Lesser General Public License for more details.                         *
++ *                                                                         *
++ * You should have received a copy of the GNU Lesser General Public        *
++ * License along with this library; if not, write to the Free Software     *
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA*
++ *                                                                         *
++ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
++
++package java_cup;
++
++import org.apache.tools.ant.Task;
++import org.apache.tools.ant.BuildException;
++
++import java.io.*;
++
++/*  
++  Example build.xml file for using CUP with Ant (assumes that java_cup classes 
++  are available in classpath):  
++
++  <project name="cup" default="jar">
++ 
++  <taskdef classname="java_cup.AntTask" name="cup" />
++ 
++  <target name="compile" depends="cup">
++    <javac srcdir="." destdir="bin" target="1.1" classpath="." />  
++  </target> 
++  
++  <target name="cup">
++    <cup file="java_cup/parser.cup" dir="java_cup" nosummary="true" />
++  </target>
++ 
++  <target name="jar" depends="compile">
++    <jar basedir="bin" includes="java_cup/**" jarfile="java_cup.jar" />
++  </target>
++  </project>
++ */
++
++/**
++ * An Ant task class for CUP, supports all CUP options available on 
++ * the command line.
++ * <p>
++ * The option names are the same as on the command line. Options without
++ * parameters are booleans in Ant (-nosummary becomes nosummary="true")
++ * <p>
++ * Example build.xml file for Ant (assumes that java_cup classes 
++ * are available in classpath):
++ * <pre> 
++ * &lt;project name="cup" default="jar"&gt;
++ * 
++ * &lt;taskdef classname="java_cup.AntTask" name="cup" /&gt;
++ * 
++ * &lt;target name="compile" depends="cup"&gt;
++ *   &lt;javac srcdir="." destdir="bin" target="1.1" classpath="." /&gt;  
++ * &lt;/target&gt; 
++ * 
++ * &lt;target name="cup"&gt;
++ *   &lt;cup file="java_cup/parser.cup" dir="java_cup" nosummary="true" /&gt;
++ * &lt;/target&gt;
++ *
++ * &lt;target name="jar" depends="compile"&gt;
++ *   &lt;jar basedir="bin" includes="java_cup/**" jarfile="java_cup.jar" /&gt;
++ * &lt;/target&gt;
++ * &lt;/project&gt;
++ * </pre>
++ * 
++ * @see java_cup.Main
++ * 
++ * @author Gerwin Klein
++ */
++public class AntTask extends Task {
++
++  private File inputFile;
++
++  /* FIXME: this duplicates default settings, 
++   * would be better to refactor settings from Main, emit, and here
++   * into an own class.
++   */
++  private String parserName = "parser";
++  private String symName = "sym";
++  private String packageName = null;
++
++  private File destinationDir;
++
++  private int expect = 0;
++
++  private boolean symInterface = false;
++  private boolean nonTerms = false;
++  private boolean compactRed = false;
++  private boolean noSummary = false;
++  private boolean noWarn = false;
++  private boolean dumpStates = false;
++  private boolean dumpTables = false;
++  private boolean printProgress = false;
++  private boolean dumpGrammar = false;
++  private boolean showTiming = false;
++  private boolean lrValues = true;
++  private boolean suppressScanner = false;
++
++  /**
++   * Run the Ant task. Assumes that options have already been set 
++   * with setter methods by Ant. 
++   * 
++   * @throws BuildException  if build fails
++   */
++  public void execute() throws BuildException {
++    if (inputFile == null) {
++      throw new BuildException("No input file. Use <cup file=\"your_parser.cup\"/>");
++    }
++
++    if (!inputFile.canRead()) {
++      throw new BuildException("Cannot read input file " + inputFile);
++    }
++
++    try {
++      File parserFile = new File(destinationDir, parserName + ".java");
++      File symFile = new File(destinationDir, symName + ".java");
++
++      if (inputFile.lastModified() > parserFile.lastModified()
++        || inputFile.lastModified() > symFile.lastModified()) {
++
++        // cup redefines System.in       
++        InputStream systemIn_save = System.in;
++
++        /* run it. assumption: Main.parse_args works with empty 
++         * argument list and does nothing */
++        configure();
++        Main.main(new String[0]);
++
++        // restore System.in
++        System.setIn(systemIn_save);
++
++        if (noSummary) {
++          System.out.println("Generated: " + parserFile + " and " + symFile);
++        }
++      }
++    } catch (IOException e) {
++      throw new BuildException("IOException: " + e.toString());
++    } catch (internal_error e) {
++      throw new BuildException("Internal CUP error.");
++    } catch (Exception e) {
++      throw new BuildException("CUP generation failed.");
++    }
++  }
++
++  /**
++   * Configures cup accordings to the settings of this class
++   * 
++   * @throws FileNotFoundException if inputFile does not exist
++   */
++  public void configure() throws FileNotFoundException {
++    System.setIn(new FileInputStream(inputFile));
++    Main.output_dir = destinationDir;
++    Main.sym_interface = symInterface;
++    emit.parser_class_name = parserName;
++    emit.symbol_const_class_name = symName;
++    emit.package_name = packageName;
++    Main.include_non_terms = nonTerms;
++    Main.expect_conflicts = expect;
++    Main.opt_compact_red = compactRed;
++    Main.no_summary = noSummary;
++    emit.nowarn = noWarn;
++    Main.opt_dump_states = dumpStates;
++    Main.opt_dump_grammar = dumpGrammar;
++    Main.opt_dump_tables = dumpTables;
++    Main.print_progress = printProgress;
++    Main.opt_show_timing = showTiming;
++    Main.lr_values = lrValues;
++    Main.suppress_scanner = suppressScanner;
++  }
++
++  public void setDir(File destinationDir) {
++    this.destinationDir = destinationDir;
++  }
++
++  public void setFile(File file) {
++    this.inputFile = file;
++  }
++
++  public void setParser(String name) {
++    this.parserName = name;
++  }
++
++  public void setSymbols(String name) {
++    this.symName = name;
++  }
++
++  public void setPackage(String name) {
++    this.packageName = name;
++  }
++
++  public void setInterface(boolean symInterface) {
++    this.symInterface = symInterface;
++  }
++
++  public void setCompact_red(boolean b) {
++    compactRed = b;
++  }
++
++  public void setDump_grammar(boolean b) {
++    dumpGrammar = b;
++  }
++
++  public void setDump_states(boolean b) {
++    dumpStates = b;
++  }
++
++  public void setDump_tables(boolean b) {
++    dumpTables = b;
++  }
++
++  public void setDump(boolean b) {
++    dumpStates = dumpTables = dumpGrammar = true;
++  }
++
++  public void setExpect(int i) {
++    expect = i;
++  }
++
++  public void setNopositions(boolean b) {
++    lrValues = !b;
++  }
++
++  public void setNonterms(boolean b) {
++    nonTerms = b;
++  }
++
++  public void setNosummary(boolean b) {
++    noSummary = b;
++  }
++
++  public void setNowarn(boolean b) {
++    noWarn = b;
++  }
++
++  public void setProgress(boolean b) {
++    printProgress = b;
++  }
++
++  public void setTime(boolean b) {
++    showTiming = b;
++  }
++
++  public void setNoscanner(boolean b) {
++    suppressScanner = b;
++  }
++}
+diff -r -u -N java_cup_orig/Main.java java_cup/Main.java
+--- java_cup_orig/Main.java	1999-07-24 23:16:59.000000000 +1000
++++ java_cup/Main.java	2003-06-04 03:03:41.000000000 +1000
+@@ -25,6 +25,8 @@
+  *   <dd> specify parser class name [default "parser"]
+  *   <dt> -symbols name  
+  *   <dd> specify name for symbol constant class [default "sym"]
++ *   <dt> -dir name  
++ *   <dd> put generated files into directory name [default "."]
+  *   <dt> -interface
+  *   <dd> emit symbol constant <i>interface</i>, rather than class
+  *   <dt> -nonterms      
+@@ -110,6 +112,10 @@
+    *  java_cup.runtime.Scanner for compatibility with old runtimes? */
+   protected static boolean suppress_scanner = false;
+ 
++  /** User option -- directory for ouput files */ 
++  protected static File output_dir = null;
++
++
+   /*----------------------------------------------------------------------*/
+   /* Timing data (not all of these time intervals are mutually exclusive) */
+   /*----------------------------------------------------------------------*/
+@@ -244,6 +250,7 @@
+ "    -parser name   specify parser class name [default \"parser\"]\n" +
+ "    -symbols name  specify name for symbol constant class [default \"sym\"]\n"+
+ "    -interface     put symbols in an interface, rather than a class\n" +
++"    -dir name      put generated into directory name [default \".\"]" +
+ "    -nonterms      put non terminals in symbol constant class\n" + 
+ "    -expect #      number of conflicts expected/allowed [default 0]\n" + 
+ "    -compact_red   compact tables by defaulting to most frequent reduce\n" +
+@@ -287,6 +294,15 @@
+ 	      /* record the name */
+ 	      emit.package_name = argv[i];
+ 	    }
++	  else if (argv[i].equals("-dir")) 
++	    {
++	      if (++i >= len || argv[i].startsWith("-") || 
++				argv[i].endsWith(".cup")) 
++		usage("-dir must have a name argument");
++
++		/* record the name */
++		output_dir = new File(argv[i]); 
++	    }
+ 	  else if (argv[i].equals("-parser"))
+ 	    {
+ 	      /* must have an arg */
+@@ -390,23 +406,23 @@
+ 
+       /* parser class */
+       out_name = emit.parser_class_name + ".java";
+-      fil = new File(out_name);
++      fil = new File(output_dir,out_name);
+       try {
+         parser_class_file = new PrintWriter(
+ 		 new BufferedOutputStream(new FileOutputStream(fil), 4096));
+       } catch(Exception e) {
+-	System.err.println("Can't open \"" + out_name + "\" for output");
++	System.err.println("Can't open \"" + fil + "\" for output");
+ 	System.exit(3);
+       }
+ 
+       /* symbol constants class */
+       out_name = emit.symbol_const_class_name + ".java";
+-      fil = new File(out_name);
++      fil = new File(output_dir,out_name);
+       try {
+         symbol_class_file = new PrintWriter(
+ 		 new BufferedOutputStream(new FileOutputStream(fil), 4096));
+       } catch(Exception e) {
+-	System.err.println("Can't open \"" + out_name + "\" for output");
++	System.err.println("Can't open \"" + fil + "\" for output");
+ 	System.exit(4);
+       }
+     }
+@@ -656,8 +672,11 @@
+ 
+       /* code location */
+       if (output_produced)
+-	System.err.println("  Code written to \"" + emit.parser_class_name + 
+-	        ".java\", and \"" + emit.symbol_const_class_name + ".java\".");
++	System.err.println("  Code written to \"" + 
++		new File(output_dir, emit.parser_class_name) + 
++	        ".java\", and \"" + 
++	        new File(output_dir, emit.symbol_const_class_name) + 
++		".java\".");
+       else
+ 	System.err.println("  No code produced.");
+ 
